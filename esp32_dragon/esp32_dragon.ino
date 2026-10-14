@@ -1,17 +1,16 @@
+#include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 
-
 // ==================================================
-// Hardware
+// 1. Hardware Configuration
 // ==================================================
 
 #define MOTOR_PIN 4
 
-
 // ==================================================
-// BLE Settings
+// 2. BLE Configuration
 // Must match vibration_controller.py
 // ==================================================
 
@@ -21,9 +20,10 @@
 #define CHARACTERISTIC_UUID \
   "87654321-4321-4321-4321-cba987654321"
 
+#define DEVICE_NAME "Museum-ESP32"
 
 // ==================================================
-// Vibration Modes
+// 3. Vibration Modes
 // ==================================================
 
 enum VibrationMode {
@@ -35,91 +35,109 @@ enum VibrationMode {
 
 VibrationMode currentMode = STOP;
 
-
 // ==================================================
-// PWM Settings
+// 4. PWM Configuration
 // ==================================================
 
 const int PWM_FREQ = 5000;
 const int PWM_RESOLUTION = 8;
 
-// Intensity: 0–255
-const int WIND_POWER = 70;
+// Intensity range: 0-255
+
+// WIND: gradual intensity
+const int WIND_MIN_POWER = 70;
+const int WIND_MAX_POWER = 110;
+
+// RAIN: medium intensity
 const int RAIN_POWER = 100;
+
+// THUNDER: strong intensity
 const int THUNDER_POWER = 250;
 
-
 // ==================================================
-// Pattern Timing
+// 5. Pattern Timing
 // ==================================================
 
-// ---------- WIND ----------
-// 3 sec ON → 1.5 sec OFF → repeat
+// ---------------- WIND ----------------
+// Gradual increase -> decrease -> pause
 
-const unsigned long WIND_ON_TIME = 3000;
-const unsigned long WIND_OFF_TIME = 1500;
+const unsigned long WIND_RISE_TIME = 1500;
+const unsigned long WIND_FALL_TIME = 1500;
+const unsigned long WIND_PAUSE_TIME = 1500;
 
-
-// ---------- RAIN ----------
-// 150 ms ON → 120 ms OFF → repeat
+// ---------------- RAIN ----------------
+// Light -> Moderate -> Heavy -> Repeat
 
 const unsigned long RAIN_ON_TIME = 150;
-const unsigned long RAIN_OFF_TIME = 120;
 
+const unsigned long RAIN_OFF_TIMES[] = {
+  350,   // Light Rain
+  180,   // Moderate Rain
+  80     // Heavy Rain
+};
 
-// ---------- THUNDER ----------
-// 3 strong bursts → 2 sec pause → repeat
+const int RAIN_STAGES = 3;
+
+const unsigned long RAIN_STAGE_DURATION = 5000;
+
+// ---------------- THUNDER ----------------
+// Three irregular bursts -> long pause
 
 const unsigned long THUNDER_BURST_1 = 300;
 const unsigned long THUNDER_BURST_2 = 450;
 const unsigned long THUNDER_BURST_3 = 600;
 
-const unsigned long THUNDER_GAP = 150;
+const unsigned long THUNDER_GAP_1 = 200;
+const unsigned long THUNDER_GAP_2 = 120;
+
 const unsigned long THUNDER_PAUSE = 2000;
 
-
 // ==================================================
-// Pattern State
+// 6. Pattern State
 // ==================================================
 
 unsigned long previousMillis = 0;
+unsigned long rainStartMillis = 0;
+
 int patternStep = 0;
 
-
 // ==================================================
-// Motor Control
+// 7. Motor Control
 // ==================================================
 
 void setMotor(int power) {
+
+  power = constrain(power, 0, 255);
+
   ledcWrite(MOTOR_PIN, power);
 }
 
-
 void motorOff() {
+
   ledcWrite(MOTOR_PIN, 0);
 }
 
-
 // ==================================================
-// Reset Pattern
+// 8. Reset Pattern
 // ==================================================
 
 void resetPattern() {
 
   previousMillis = millis();
+  rainStartMillis = millis();
+
   patternStep = 0;
 
   motorOff();
 }
 
-
 // ==================================================
-// Change Mode
+// 9. Change Mode
 // ==================================================
 
 void setMode(VibrationMode newMode) {
 
-  // Do not restart the same pattern
+  // Avoid restarting the same pattern
   if (currentMode == newMode) {
     return;
   }
@@ -148,56 +166,94 @@ void setMode(VibrationMode newMode) {
   }
 }
 
-
 // ==================================================
-// WIND Pattern
+// 10. WIND Pattern
+// Gradual increase -> decrease -> pause
 // ==================================================
 
 void updateWind() {
 
   unsigned long now = millis();
 
-  // Start vibration
+  unsigned long elapsed = now - previousMillis;
+
+  // Step 0: Gradual increase
   if (patternStep == 0) {
 
-    setMotor(WIND_POWER);
+    if (elapsed >= WIND_RISE_TIME) {
 
-    previousMillis = now;
-    patternStep = 1;
+      setMotor(WIND_MAX_POWER);
+
+      previousMillis = now;
+      patternStep = 1;
+
+    } else {
+
+      int power = map(
+        elapsed,
+        0,
+        WIND_RISE_TIME,
+        WIND_MIN_POWER,
+        WIND_MAX_POWER
+      );
+
+      setMotor(power);
+    }
   }
 
-  // After 3 sec → OFF
-  else if (
-    patternStep == 1 &&
-    now - previousMillis >= WIND_ON_TIME
-  ) {
+  // Step 1: Gradual decrease
+  else if (patternStep == 1) {
 
-    motorOff();
+    if (elapsed >= WIND_FALL_TIME) {
 
-    previousMillis = now;
-    patternStep = 2;
+      motorOff();
+
+      previousMillis = now;
+      patternStep = 2;
+
+    } else {
+
+      int power = map(
+        elapsed,
+        0,
+        WIND_FALL_TIME,
+        WIND_MAX_POWER,
+        WIND_MIN_POWER
+      );
+
+      setMotor(power);
+    }
   }
 
-  // After 1.5 sec OFF → repeat
-  else if (
-    patternStep == 2 &&
-    now - previousMillis >= WIND_OFF_TIME
-  ) {
+  // Step 2: Pause
+  else if (patternStep == 2) {
 
-    patternStep = 0;
+    if (elapsed >= WIND_PAUSE_TIME) {
+
+      previousMillis = now;
+      patternStep = 0;
+    }
   }
 }
 
-
 // ==================================================
-// RAIN Pattern
+// 11. RAIN Pattern
+// Increasing pulse frequency
 // ==================================================
 
 void updateRain() {
 
   unsigned long now = millis();
 
-  // Start pulse
+  unsigned long elapsed = now - rainStartMillis;
+
+  // Determine current rain stage
+  int stage =
+    (elapsed / RAIN_STAGE_DURATION) % RAIN_STAGES;
+
+  unsigned long offTime = RAIN_OFF_TIMES[stage];
+
+  // Step 0: Start pulse
   if (patternStep == 0) {
 
     setMotor(RAIN_POWER);
@@ -206,7 +262,7 @@ void updateRain() {
     patternStep = 1;
   }
 
-  // End pulse
+  // Step 1: End pulse
   else if (
     patternStep == 1 &&
     now - previousMillis >= RAIN_ON_TIME
@@ -218,113 +274,136 @@ void updateRain() {
     patternStep = 2;
   }
 
-  // Short gap → repeat
+  // Step 2: Wait before next pulse
   else if (
     patternStep == 2 &&
-    now - previousMillis >= RAIN_OFF_TIME
+    now - previousMillis >= offTime
   ) {
 
     patternStep = 0;
   }
 }
 
-
 // ==================================================
-// THUNDER Pattern
+// 12. THUNDER Pattern
+// Irregular strong bursts
 // ==================================================
 
 void updateThunder() {
 
   unsigned long now = millis();
 
-  // Burst 1
-  if (patternStep == 0) {
+  switch (patternStep) {
 
-    setMotor(THUNDER_POWER);
+    // Burst 1
+    case 0:
 
-    previousMillis = now;
-    patternStep = 1;
-  }
+      setMotor(THUNDER_POWER);
 
-  // End Burst 1
-  else if (
-    patternStep == 1 &&
-    now - previousMillis >= THUNDER_BURST_1
-  ) {
+      previousMillis = now;
+      patternStep = 1;
 
-    motorOff();
+      break;
 
-    previousMillis = now;
-    patternStep = 2;
-  }
+    // End Burst 1
+    case 1:
 
-  // Gap → Burst 2
-  else if (
-    patternStep == 2 &&
-    now - previousMillis >= THUNDER_GAP
-  ) {
+      if (
+        now - previousMillis >= THUNDER_BURST_1
+      ) {
 
-    setMotor(THUNDER_POWER);
+        motorOff();
 
-    previousMillis = now;
-    patternStep = 3;
-  }
+        previousMillis = now;
+        patternStep = 2;
+      }
 
-  // End Burst 2
-  else if (
-    patternStep == 3 &&
-    now - previousMillis >= THUNDER_BURST_2
-  ) {
+      break;
 
-    motorOff();
+    // Gap 1
+    case 2:
 
-    previousMillis = now;
-    patternStep = 4;
-  }
+      if (
+        now - previousMillis >= THUNDER_GAP_1
+      ) {
 
-  // Gap → Burst 3
-  else if (
-    patternStep == 4 &&
-    now - previousMillis >= THUNDER_GAP
-  ) {
+        setMotor(THUNDER_POWER);
 
-    setMotor(THUNDER_POWER);
+        previousMillis = now;
+        patternStep = 3;
+      }
 
-    previousMillis = now;
-    patternStep = 5;
-  }
+      break;
 
-  // End Burst 3
-  else if (
-    patternStep == 5 &&
-    now - previousMillis >= THUNDER_BURST_3
-  ) {
+    // End Burst 2
+    case 3:
 
-    motorOff();
+      if (
+        now - previousMillis >= THUNDER_BURST_2
+      ) {
 
-    previousMillis = now;
-    patternStep = 6;
-  }
+        motorOff();
 
-  // Long pause → repeat entire sequence
-  else if (
-    patternStep == 6 &&
-    now - previousMillis >= THUNDER_PAUSE
-  ) {
+        previousMillis = now;
+        patternStep = 4;
+      }
 
-    patternStep = 0;
+      break;
+
+    // Gap 2
+    case 4:
+
+      if (
+        now - previousMillis >= THUNDER_GAP_2
+      ) {
+
+        setMotor(THUNDER_POWER);
+
+        previousMillis = now;
+        patternStep = 5;
+      }
+
+      break;
+
+    // End Burst 3
+    case 5:
+
+      if (
+        now - previousMillis >= THUNDER_BURST_3
+      ) {
+
+        motorOff();
+
+        previousMillis = now;
+        patternStep = 6;
+      }
+
+      break;
+
+    // Long pause
+    case 6:
+
+      if (
+        now - previousMillis >= THUNDER_PAUSE
+      ) {
+
+        patternStep = 0;
+      }
+
+      break;
   }
 }
 
-
 // ==================================================
-// BLE Characteristic Callback
+// 13. BLE Characteristic Callback
 // Receives W / R / T / S
 // ==================================================
 
 class MotorCallback : public BLECharacteristicCallbacks {
 
-  void onWrite(BLECharacteristic *pCharacteristic) override {
+  void onWrite(
+    BLECharacteristic *pCharacteristic
+  ) override {
 
     String value = pCharacteristic->getValue();
 
@@ -337,78 +416,65 @@ class MotorCallback : public BLECharacteristicCallbacks {
     Serial.print("Received command: ");
     Serial.println(command);
 
-
     if (command == 'W') {
 
       setMode(WIND);
 
-    }
-
-    else if (command == 'R') {
+    } else if (command == 'R') {
 
       setMode(RAIN);
 
-    }
-
-    else if (command == 'T') {
+    } else if (command == 'T') {
 
       setMode(THUNDER);
 
-    }
-
-    else if (command == 'S') {
+    } else if (command == 'S') {
 
       setMode(STOP);
-
     }
   }
 };
 
-
 // ==================================================
-// BLE Server Callback
-// Handles connection / disconnection
+// 14. BLE Server Callbacks
 // ==================================================
 
 class ServerCallbacks : public BLEServerCallbacks {
 
-  void onConnect(BLEServer *pServer) override {
+  void onConnect(
+    BLEServer *pServer
+  ) override {
 
     Serial.println("BLE client connected");
   }
 
-
-  void onDisconnect(BLEServer *pServer) override {
+  void onDisconnect(
+    BLEServer *pServer
+  ) override {
 
     Serial.println("BLE client disconnected");
 
-    // Stop vibration immediately
+    // Stop vibration
     setMode(STOP);
 
-    // Give BLE stack a moment to finish disconnecting
     delay(100);
 
-    // Start advertising again so Python can reconnect
+    // Restart advertising
     BLEDevice::startAdvertising();
 
     Serial.println("BLE advertising restarted");
   }
 };
 
-
 // ==================================================
-// Setup
+// 15. Setup
 // ==================================================
 
 void setup() {
 
   Serial.begin(115200);
 
-
-  // ------------------------------------------------
-  // PWM Motor Setup
-  // ESP32 Arduino Core 3.x
-  // ------------------------------------------------
+  // ---------------- PWM Setup ----------------
 
   ledcAttach(
     MOTOR_PIN,
@@ -418,67 +484,48 @@ void setup() {
 
   motorOff();
 
+  // ---------------- BLE Setup ----------------
 
-  // ------------------------------------------------
-  // BLE Setup
-  // ------------------------------------------------
-
-  BLEDevice::init("Museum-ESP32");
-
+  BLEDevice::init(DEVICE_NAME);
 
   BLEServer *pServer =
-      BLEDevice::createServer();
+    BLEDevice::createServer();
 
-
-  // Connection / disconnection handling
   pServer->setCallbacks(
     new ServerCallbacks()
   );
 
-
   BLEService *pService =
-      pServer->createService(
-        SERVICE_UUID
-      );
-
+    pServer->createService(
+      SERVICE_UUID
+    );
 
   BLECharacteristic *pCharacteristic =
-      pService->createCharacteristic(
-        CHARACTERISTIC_UUID,
-        BLECharacteristic::PROPERTY_WRITE
-      );
-
+    pService->createCharacteristic(
+      CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_WRITE
+    );
 
   pCharacteristic->setCallbacks(
     new MotorCallback()
   );
 
-
   pService->start();
 
-
-  // ------------------------------------------------
-  // BLE Advertising
-  // ------------------------------------------------
+  // ---------------- Advertising ----------------
 
   BLEAdvertising *pAdvertising =
-      BLEDevice::getAdvertising();
-
+    BLEDevice::getAdvertising();
 
   pAdvertising->addServiceUUID(
     SERVICE_UUID
   );
 
-
   pAdvertising->setScanResponse(true);
-
 
   BLEDevice::startAdvertising();
 
-
-  // ------------------------------------------------
-  // Ready
-  // ------------------------------------------------
+  // ---------------- Ready ----------------
 
   Serial.println();
   Serial.println("============================");
@@ -493,9 +540,8 @@ void setup() {
   Serial.println();
 }
 
-
 // ==================================================
-// Main Loop
+// 16. Main Loop
 // ==================================================
 
 void loop() {
@@ -503,25 +549,25 @@ void loop() {
   switch (currentMode) {
 
     case WIND:
+
       updateWind();
       break;
 
-
     case RAIN:
+
       updateRain();
       break;
 
-
     case THUNDER:
+
       updateThunder();
       break;
 
-
     case STOP:
+
       motorOff();
       break;
   }
-
 
   // Keep BLE responsive
   delay(5);
