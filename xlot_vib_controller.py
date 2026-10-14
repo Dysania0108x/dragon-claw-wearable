@@ -4,14 +4,10 @@ import urllib.request
 
 class VibrationController:
 
-    def __init__(self, device_ip="192.168.4.1"):
-
+    def __init__(self, device_ip="xlot-hermes.local"):
         self.base_url = f"http://{device_ip}"
-
         self.connected = False
-
         self.heartbeat_task = None
-
     # ==========================================
     # HTTP Request
     # ==========================================

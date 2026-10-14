@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 
 // ==================================================
 // 1. Hardware Configuration
@@ -12,8 +13,15 @@
 // 2. Wi-Fi Configuration
 // ==================================================
 
-const char* AP_SSID = "hxever";
-const char* AP_PASS = "hank_hsu";
+const char* WIFI_SSID = "hxever";
+const char* WIFI_PASS = "hank_hsu";
+
+const unsigned long WIFI_TIMEOUT = 10000;
+const unsigned long WIFI_RETRY_INTERVAL = 10000;
+
+unsigned long lastWiFiAttempt = 0;
+
+bool mdnsStarted = false;
 
 WebServer server(80);
 
@@ -31,7 +39,7 @@ enum VibrationMode {
 VibrationMode currentMode = STOP;
 
 // ==================================================
-// 4. Intensity Configuration (0-100%)
+// 4. Vibration Intensity (0-100%)
 // ==================================================
 
 // Wind: gradual increase and decrease
@@ -57,9 +65,9 @@ const unsigned long WIND_PAUSE_TIME = 1500;
 const unsigned long RAIN_ON_TIME = 150;
 
 const unsigned long RAIN_OFF_TIMES[] = {
-  850,  // Light: 1 pulse/sec
-  450,  // Moderate
-  200   // Heavy
+  850,  // Light Rain
+  450,  // Moderate Rain
+  200   // Heavy Rain
 };
 
 const int RAIN_STAGES = 3;
@@ -106,7 +114,7 @@ void motorOff() {
 }
 
 // ==================================================
-// 8. Pattern Reset
+// 8. Reset Pattern
 // ==================================================
 
 void resetPattern() {
@@ -125,10 +133,8 @@ void resetPattern() {
 
 void setMode(VibrationMode newMode) {
 
-  // Refresh watchdog
   lastHeartbeat = millis();
 
-  // Do not restart the same pattern
   if (currentMode == newMode) {
     return;
   }
@@ -160,8 +166,8 @@ void setMode(VibrationMode newMode) {
 }
 
 // ==================================================
-// 10. WIND
-// Gradual increase -> decrease -> pause -> repeat
+// 10. WIND Pattern
+// Gradual increase -> decrease -> pause
 // ==================================================
 
 void updateWind() {
@@ -226,7 +232,7 @@ void updateWind() {
 }
 
 // ==================================================
-// 11. RAIN
+// 11. RAIN Pattern
 // Light -> Moderate -> Heavy -> Repeat
 // ==================================================
 
@@ -270,7 +276,7 @@ void updateRain() {
 }
 
 // ==================================================
-// 12. THUNDER
+// 12. THUNDER Pattern
 // Three irregular bursts -> pause -> repeat
 // ==================================================
 
@@ -281,72 +287,53 @@ void updateThunder() {
   switch (patternStep) {
 
     case 0:
-
       setMotor(THUNDER_POWER);
-
       previousMillis = now;
       patternStep = 1;
       break;
 
     case 1:
-
       if (now - previousMillis >= THUNDER_BURST_1) {
-
         motorOff();
-
         previousMillis = now;
         patternStep = 2;
       }
       break;
 
     case 2:
-
       if (now - previousMillis >= THUNDER_GAP_1) {
-
         setMotor(THUNDER_POWER);
-
         previousMillis = now;
         patternStep = 3;
       }
       break;
 
     case 3:
-
       if (now - previousMillis >= THUNDER_BURST_2) {
-
         motorOff();
-
         previousMillis = now;
         patternStep = 4;
       }
       break;
 
     case 4:
-
       if (now - previousMillis >= THUNDER_GAP_2) {
-
         setMotor(THUNDER_POWER);
-
         previousMillis = now;
         patternStep = 5;
       }
       break;
 
     case 5:
-
       if (now - previousMillis >= THUNDER_BURST_3) {
-
         motorOff();
-
         previousMillis = now;
         patternStep = 6;
       }
       break;
 
     case 6:
-
       if (now - previousMillis >= THUNDER_PAUSE) {
-
         patternStep = 0;
       }
       break;
@@ -354,8 +341,86 @@ void updateThunder() {
 }
 
 // ==================================================
-// 13. HTTP Command Handler
-// W / R / T / S
+// 13. Wi-Fi Connection
+// ==================================================
+
+bool connectWiFi() {
+
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+
+  Serial.println();
+  Serial.println("Connecting to phone hotspot...");
+
+  Serial.print("SSID: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.disconnect();
+  delay(100);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  unsigned long startTime = millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - startTime < WIFI_TIMEOUT
+  ) {
+    delay(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println();
+    Serial.println("Wi-Fi connected!");
+
+    Serial.print("Connected SSID: ");
+    Serial.println(WiFi.SSID());
+
+    Serial.print("XLOT IP: ");
+    Serial.println(WiFi.localIP());
+
+    return true;
+  }
+
+  Serial.println();
+  Serial.println("Wi-Fi connection failed.");
+
+  return false;
+}
+
+// ==================================================
+// 14. mDNS
+// ==================================================
+
+void startMDNS() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if (mdnsStarted) {
+    return;
+  }
+
+  if (MDNS.begin("xlot-hermes")) {
+
+    MDNS.addService("http", "tcp", 80);
+
+    mdnsStarted = true;
+
+    Serial.println("mDNS ready:");
+    Serial.println("http://xlot-hermes.local");
+
+  } else {
+
+    Serial.println("mDNS initialization failed.");
+  }
+}
+
+// ==================================================
+// 15. HTTP Command Handler
 // ==================================================
 
 void handleCommand() {
@@ -372,7 +437,6 @@ void handleCommand() {
   }
 
   String command = server.arg("mode");
-
   command.toUpperCase();
 
   if (command == "W") {
@@ -410,7 +474,7 @@ void handleCommand() {
 }
 
 // ==================================================
-// 14. Heartbeat Handler
+// 16. Heartbeat Handler
 // ==================================================
 
 void handleHeartbeat() {
@@ -425,7 +489,7 @@ void handleHeartbeat() {
 }
 
 // ==================================================
-// 15. Status Handler
+// 17. Status Handler
 // ==================================================
 
 String getModeName() {
@@ -467,17 +531,18 @@ void handleStatus() {
 }
 
 // ==================================================
-// 16. Web Interface
+// 18. Web Interface
 // ==================================================
 
 const char INDEX_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
   <meta name="viewport"
         content="width=device-width, initial-scale=1">
 
-  <title>Museum Haptic Controller</title>
+  <title>Dragon Claw Haptic Controller</title>
 
   <style>
     body {
@@ -540,9 +605,14 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     let heartbeatTimer = null;
 
     async function send(mode) {
+
       try {
+
         const r = await fetch('/command?mode=' + mode);
-        if (!r.ok) throw new Error('Command failed');
+
+        if (!r.ok) {
+          throw new Error('Command failed');
+        }
 
         if (heartbeatTimer) {
           clearInterval(heartbeatTimer);
@@ -550,13 +620,16 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
         }
 
         if (mode !== 'S') {
+
           heartbeatTimer = setInterval(async () => {
+
             try {
               await fetch('/heartbeat');
             } catch (e) {
               document.getElementById('status').innerText =
                 'Connection lost';
             }
+
           }, 2000);
         }
 
@@ -564,6 +637,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
           'Command: ' + mode;
 
       } catch (e) {
+
         document.getElementById('status').innerText =
           'Connection error';
       }
@@ -584,21 +658,32 @@ void handleRoot() {
 }
 
 // ==================================================
-// 17. Setup
+// 19. Setup
 // ==================================================
 
 void setup() {
 
   Serial.begin(115200);
+  delay(1000);
 
   pinMode(MOTOR_PIN, OUTPUT);
-
   motorOff();
 
-  WiFi.mode(WIFI_AP);
+  Serial.println();
+  Serial.println("============================");
+  Serial.println("XLOT-Hermes Starting...");
+  Serial.println("============================");
 
-  WiFi.softAP(AP_SSID, AP_PASS);
+  // Wi-Fi Station Mode
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
 
+  connectWiFi();
+  startMDNS();
+
+  lastWiFiAttempt = millis();
+
+  // HTTP Routes
   server.on("/", handleRoot);
   server.on("/command", handleCommand);
   server.on("/heartbeat", handleHeartbeat);
@@ -608,23 +693,53 @@ void setup() {
 
   lastHeartbeat = millis();
 
-  Serial.println("============================");
-  Serial.println("XLOT-Hermes Ready");
-  Serial.println("============================");
+  Serial.println();
+  Serial.println("HTTP Server Started");
 
-  Serial.print("IP: ");
-  Serial.println(WiFi.softAPIP());
+  Serial.println("W = Wind");
+  Serial.println("R = Rain");
+  Serial.println("T = Thunder");
+  Serial.println("S = Stop");
+
+  Serial.println();
 }
 
 // ==================================================
-// 18. Main Loop
+// 20. Main Loop
 // ==================================================
 
 void loop() {
 
-  server.handleClient();
+  // Wi-Fi reconnect
+  if (WiFi.status() != WL_CONNECTED) {
 
-  // Safety watchdog
+    if (currentMode != STOP) {
+      setMode(STOP);
+    }
+
+    if (mdnsStarted) {
+      MDNS.end();
+      mdnsStarted = false;
+    }
+
+    if (
+      millis() - lastWiFiAttempt >= WIFI_RETRY_INTERVAL
+    ) {
+
+      lastWiFiAttempt = millis();
+
+      if (connectWiFi()) {
+        startMDNS();
+      }
+    }
+  }
+
+  // Handle HTTP requests
+  if (WiFi.status() == WL_CONNECTED) {
+    server.handleClient();
+  }
+
+  // Heartbeat timeout
   if (
     currentMode != STOP &&
     millis() - lastHeartbeat > COMMAND_TIMEOUT
@@ -635,6 +750,7 @@ void loop() {
     setMode(STOP);
   }
 
+  // Update vibration pattern
   switch (currentMode) {
 
     case WIND:
