@@ -44,9 +44,9 @@ const int PWM_FREQ = 5000;
 const int PWM_RESOLUTION = 8;
 
 // Intensity: 0–255
-const int WIND_POWER = 210;
-const int RAIN_POWER = 230;
-const int THUNDER_POWER = 255;
+const int WIND_POWER = 70;
+const int RAIN_POWER = 100;
+const int THUNDER_POWER = 250;
 
 
 // ==================================================
