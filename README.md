@@ -316,3 +316,21 @@ Three-, four-, and five-finger gestures support exploration of dragon
 claw configurations, while wind, rain, and thunder interactions use
 visual, audio, and haptic feedback to communicate dragons'
 associations with natural forces.
+
+---
+
+## Four-Motor Wearable Firmware (V4.1)
+
+The latest XLOT-Hermes (ESP32-S2) + PCA9685 **Wi-Fi** wearable firmware is available at [`wearable_multi/wearable_multi.ino`](wearable_multi/wearable_multi.ino). This is a separate implementation from the earlier BLE and single-motor prototypes above; those files are retained for reference.
+
+- **I2C:** SDA GPIO17, SCL GPIO18; PCA9685 address `0x40`.
+- **Motor mapping:** M1=CH6, M2=CH7, M3=CH8, M4=CH9.
+- **Wind:** sequential 450 ms pulses with 300 ms stagger (150 ms overlap, wrapping around).
+- **Rain:** randomly selected motor, 60–150 ms pulse, 80–250 ms start interval, randomized 30–45% PWM duty.
+- **Thunder:** two synchronized bursts on all four motors (unchanged).
+- **HTTP API:** `/status`, `/test?ch=0..3`, `/command?mode=W|R|T|S`, `/heartbeat`, `/stop`.
+- **Safety:** weather modes stop if no heartbeat is received for 6 seconds. PWM percentages are duty cycles, not calibrated physical intensities.
+
+Requires the vendor's `XLOT_PWMServoDriver` Arduino library. Configure `WIFI_SSID` and `WIFI_PASS` **locally before uploading**; do not commit real hotspot passwords. Verify motor supply and wiring before applying power.
+
+The gesture-controlled web application and Python bridge are maintained separately in [parislerr/dragon-claw-challenge](https://github.com/parislerr/dragon-claw-challenge) on the `feature/xlot-wearable` branch. The four-motor firmware has been copied from that branch; it has not been independently recompiled in this repository.
